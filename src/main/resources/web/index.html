@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b111b"><title>Quant Performance Lab</title>
+  <link rel="stylesheet" href="/app.css" />
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo">Q</span><div><strong>QUANT</strong><small>PERFORMANCE LAB</small></div></div>
+      <p class="section-label">OPERATIONS</p>
+      <a class="nav active" href="#overview"><span>▦</span> Overview</a>
+      <a class="nav" href="#history"><span>⌁</span> Performance history</a>
+      <a class="nav" href="#snapshots"><span>◈</span> Snapshots</a>
+      <a class="nav" href="#diagnostics"><span>⌘</span> JVM diagnostics</a>
+      <div class="sidebar-bottom"><div class="health-pill"><span class="dot"></span> Monitoring online</div><small id="engine-status">Connecting…</small><small>Java 8 · OSHI · Zero database</small></div>
+    </aside>
+    <main>
+      <header class="topbar"><div><span class="eyebrow">HOST MONITORING</span><h1>Performance overview</h1><p>Lightweight, low-impact process intelligence.</p></div><div class="topactions"><span class="live"><span class="dot"></span> Live</span><button id="refresh" class="button ghost">↻ Refresh</button></div></header>
+      <div class="notice" id="message" role="status" aria-live="polite" hidden></div>
+      <div class="toolbar"><div><label for="process-select">SELECT PROCESS</label><select id="process-select"><option value="">No processes watched</option></select></div>
+        <form id="watch-form"><label for="watch-pid">WATCH A PID</label><div class="inline"><input type="number" min="1" id="watch-pid" placeholder="e.g. 12345" required><button class="button primary" type="submit">+ Add process</button></div></form></div>
+      <section class="kpis" id="overview">
+        <div class="kpi"><span>PROCESS CPU <span class="hint">1 core = 100%</span></span><strong id="cpu">—</strong><small id="cpu-sub">Waiting for second sample</small></div>
+        <div class="kpi"><span>RESIDENT MEMORY</span><strong id="rss">—</strong><small id="rss-sub">RSS · includes shared pages</small></div>
+        <div class="kpi"><span>ACTIVE THREADS</span><strong id="threads">—</strong><small id="threads-sub">OS threads</small></div>
+        <div class="kpi"><span>HOST LOAD</span><strong id="load">—</strong><small id="load-sub">1-minute load average</small></div>
+      </section>
+      <section class="panel" id="history">
+        <div class="panel-head"><div><span class="eyebrow">TIME SERIES</span><h2>Performance history</h2><p>Explore trends before and after a change.</p></div>
+          <div class="controls"><div class="segmented" id="range"><button class="selected" data-range="3600000">1H</button><button data-range="86400000">24H</button><button data-range="604800000">7D</button></div><button class="button ghost" id="export">Export JSON</button></div></div>
+        <div class="metric-tabs" id="metrics"><button class="selected" data-metric="cpuPercent">CPU</button><button data-metric="rssBytes">Memory</button><button data-metric="threads">Threads</button><button data-metric="readRateBytes">Read rate</button><button data-metric="writeRateBytes">Write rate</button><button data-metric="hostCpuPercent">Host CPU</button></div>
+        <div class="chart-wrap"><canvas id="chart" aria-label="Process performance trend" role="img"></canvas><div class="chart-empty" id="chart-empty">Select or watch a process to see performance history.</div></div>
+        <div class="chart-footer"><span id="chart-from">—</span><span id="chart-summary">No samples</span><span id="chart-to">—</span></div>
+      </section>
+      <div class="split">
+        <section class="panel" id="snapshots"><div class="panel-head"><div><span class="eyebrow">BASELINES</span><h2>Snapshot comparison</h2><p>Capture a point-in-time baseline and compare it.</p></div></div>
+          <div class="snapshot-form"><input id="snapshot-label" maxlength="64" placeholder="Name this snapshot…" aria-label="Snapshot name"><button class="button primary" id="capture">◈ Capture</button></div>
+          <div class="compare-selects"><div><label for="snapshot-a">BASELINE A</label><select id="snapshot-a"><option value="">Select</option></select></div><div><label for="snapshot-b">COMPARE B</label><select id="snapshot-b"><option value="">Select</option></select></div></div>
+          <div id="comparison" class="comparison-empty">Capture two snapshots to compare CPU, memory, threads and host pressure.</div>
+        </section>
+        <section class="panel"><div class="panel-head"><div><span class="eyebrow">INSIGHTS</span><h2>Diagnostic signals</h2><p>Transparent rules, not speculative AI.</p></div></div><div id="insights" class="insight-list"><div class="insight">Start watching a process to display its diagnostic signals.</div></div>
+          <div class="divider"></div><div class="panel-head"><div><span class="eyebrow">ON DEMAND</span><h2 id="diagnostics">JVM diagnostics</h2><p>Disabled by default. Can affect the target JVM.</p></div></div>
+          <div class="controls"><select id="diag-kind" aria-label="Diagnostic command"><option value="threads">Thread dump</option><option value="heap">Heap info</option><option value="flags">JVM flags</option></select><button class="button ghost" id="diag-run">Run diagnostic</button></div><pre class="diagnostic-output" id="diag-output">Requires --allow-jcmd at startup.</pre>
+        </section>
+      </div>
+      <section class="panel process-panel"><div class="panel-head"><div><span class="eyebrow">MANAGED TARGETS</span><h2>Watched processes</h2></div><small id="watch-count">0 processes</small></div><div class="process-list" id="process-list"><div class="empty">No watched processes yet.</div></div></section>
+      <footer>QUANT PERFORMANCE LAB <span>·</span> Read-only by default <span>·</span> Bounded local history <span>·</span> No central database</footer>
+    </main>
+  </div>
+</body>
+</html>
