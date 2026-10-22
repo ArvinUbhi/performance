@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.quantlab.core.Json;
 import io.quantlab.core.SamplingEngine;
+import io.quantlab.core.SnapshotService;
 import io.quantlab.diagnostics.JcmdDiagnostics;
 import io.quantlab.model.ProcessKey;
 import io.quantlab.model.Sample;
@@ -15,6 +16,8 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 
 /** Embedded JDK HTTP server; no web framework, static assets loaded from classpath. */
 public final class ApiServer implements AutoCloseable {
@@ -22,23 +25,26 @@ public final class ApiServer implements AutoCloseable {
     private final SamplingEngine sampler;
     private final HistoryStore history;
     private final SnapshotStore snapshots;
+    private final SnapshotService snapshotService;
+    private final ExecutorService httpWorkers;
     private final JcmdDiagnostics diagnostics;
     private final String token;
     private final long started=System.currentTimeMillis();
     public ApiServer(String host,int port,String token,SamplingEngine sampler,HistoryStore history,
-                     SnapshotStore snapshots,JcmdDiagnostics diagnostics) throws IOException {
+                     SnapshotStore snapshots,SnapshotService snapshotService,JcmdDiagnostics diagnostics) throws IOException {
         InetAddress address=InetAddress.getByName(host);
         if(!address.isLoopbackAddress()&&(token==null||token.length()<24))
             throw new IllegalArgumentException("Non-loopback binding requires --token with at least 24 characters; deploy behind HTTPS");
         this.token=token;this.sampler=sampler;this.history=history;
-        this.snapshots=snapshots;this.diagnostics=diagnostics;
+        this.snapshots=snapshots;this.snapshotService=snapshotService;this.diagnostics=diagnostics;
         server=HttpServer.create(new InetSocketAddress(address,port),32);
-        server.setExecutor(Executors.newFixedThreadPool(4,r->{Thread t=new Thread(r,"quantlab-http");t.setDaemon(true);return t;}));
+        httpWorkers=Executors.newFixedThreadPool(4,r->{Thread t=new Thread(r,"quantlab-http");t.setDaemon(true);return t;});
+        server.setExecutor(httpWorkers);
         server.createContext("/",this::handle);
     }
     public void start(){server.start();}
     public int port(){return server.getAddress().getPort();}
-    @Override public void close(){server.stop(1);}
+    @Override public void close(){server.stop(1);httpWorkers.shutdownNow();}
     private void handle(HttpExchange e) throws IOException {
         try {
             e.getResponseHeaders().set("X-Content-Type-Options","nosniff");
@@ -53,11 +59,15 @@ public final class ApiServer implements AutoCloseable {
             if(!path.startsWith("/api/")){send(e,404,"{\"error\":\"not found\"}");return;}
             Map<String,String> q=query(e.getRequestURI().getRawQuery());
             String result;
+            int responseCode=200;
             if("/api/status".equals(path)&&"GET".equals(method)) {
                 result="{\"uptimeMillis\":"+(System.currentTimeMillis()-started)+",\"collector\":"+Json.quote(sampler.collector())+
                     ",\"cycles\":"+sampler.cycles()+",\"collectionErrors\":"+sampler.errors()+
                     ",\"droppedHistorySamples\":"+history.dropped()+
                     ",\"samplingBudgetSkips\":"+sampler.skippedDueToBudget()+
+                    ",\"snapshotQueueDepth\":"+snapshotService.pending()+
+                    ",\"snapshotActiveWorkers\":"+snapshotService.active()+
+                    ",\"snapshotRejected\":"+snapshotService.rejected()+
                     ",\"lastCycleMillis\":"+sampler.lastCycleMillis()+
                     ",\"allowJcmd\":"+diagnostics.enabled()+"}";
             }else if("/api/processes".equals(path)&&"GET".equals(method)) {
@@ -89,7 +99,13 @@ public final class ApiServer implements AutoCloseable {
                 result=b.append("]}").toString();
             }else if("/api/snapshots".equals(path)&&"POST".equals(method)) {
                 int pid=integer(q,"pid",0,1,Integer.MAX_VALUE);
-                Snapshot s=snapshots.create(q.get("label"),sampler.latest(pid));result=s.json();
+                if(!sampler.watched().contains(pid))throw new IllegalArgumentException("PID is not watched");
+                SnapshotService.Job job=snapshotService.submit(pid,q.get("label"));
+                result=job.json();responseCode=202;
+            }else if("/api/snapshot-jobs".equals(path)&&"GET".equals(method)) {
+                SnapshotService.Job job=snapshotService.status(q.get("id"));
+                if(job==null){send(e,404,"{\"error\":\"Snapshot job not found\"}");return;}
+                result=job.json();
             }else if("/api/snapshots".equals(path)&&"GET".equals(method)) {
                 int pid=integer(q,"pid",0,0,Integer.MAX_VALUE);
                 List<Snapshot> all=snapshots.list(pid);
@@ -102,8 +118,9 @@ public final class ApiServer implements AutoCloseable {
                 int pid=integer(q,"pid",0,1,Integer.MAX_VALUE);
                 result="{\"output\":"+Json.quote(diagnostics.run(pid,q.get("kind")))+"}";
             }else {send(e,404,"{\"error\":\"not found\"}");return;}
-            send(e,200,result);
-        }catch(SecurityException ex){send(e,403,"{\"error\":"+Json.quote(ex.getMessage())+"}");}
+            send(e,responseCode,result);
+        }catch(RejectedExecutionException ex){send(e,429,"{\"error\":\"Snapshot queue is full or service closed\"}");}
+         catch(SecurityException ex){send(e,403,"{\"error\":"+Json.quote(ex.getMessage())+"}");}
          catch(IllegalArgumentException ex){send(e,400,"{\"error\":"+Json.quote(ex.getMessage())+"}");}
          catch(Exception ex){System.err.println("QuantLab API: "+ex.getClass().getSimpleName()+": "+ex.getMessage());
             send(e,500,"{\"error\":\"Internal operation failed\"}");}

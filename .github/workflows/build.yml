@@ -16,3 +16,4 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
       - run: mvn -B verify
+      - run: ./test.sh

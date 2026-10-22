@@ -145,7 +145,33 @@ el('process-select').onchange=e=>selectPid(e.target.value);
 el('refresh').onclick=refreshAll;
 el('range').addEventListener('click',e=>{const b=e.target.closest('[data-range]');if(!b)return;state.range=Number(b.dataset.range);el('range').querySelectorAll('button').forEach(x=>x.classList.toggle('selected',x===b));reloadHistory();});
 el('metrics').addEventListener('click',e=>{const b=e.target.closest('[data-metric]');if(!b)return;state.metric=b.dataset.metric;el('metrics').querySelectorAll('button').forEach(x=>x.classList.toggle('selected',x===b));drawChart();});
-el('capture').onclick=async()=>{try{if(!state.pid)throw Error('Select a process first');const label=el('snapshot-label').value.trim()||'Quick snapshot';const s=await api('/api/snapshots?'+query({pid:state.pid,label}),'POST');el('snapshot-label').value='';await reloadSnapshots();el('snapshot-b').value=s.id;compareSnapshots();message('Snapshot captured successfully.');}catch(err){message(err.message,true);}};
+// Asynchronous capture: the HTTP request only queues work; polling never blocks daemon threads.
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+el('capture').onclick=async()=>{
+  const button=el('capture');
+  if(button.disabled)return;
+  button.disabled=true;
+  try{
+    if(!state.pid)throw Error('Select a process first');
+    const label=el('snapshot-label').value.trim()||'Quick snapshot';
+    const queued=await api('/api/snapshots?'+query({pid:state.pid,label}),'POST');
+    message('Snapshot queued on the dedicated worker pool…');
+    let result=queued;
+    for(let attempt=0;attempt<120 && result.status!=='SUCCEEDED' && result.status!=='FAILED';attempt++){
+      await sleep(250);
+      result=await api('/api/snapshot-jobs?'+query({id:queued.jobId}));
+    }
+    if(result.status==='FAILED')throw Error(result.error||'Snapshot failed');
+    if(result.status!=='SUCCEEDED')throw Error('Snapshot is still running. You can check its job ID: '+queued.jobId);
+    const snapshot=result.snapshot;
+    el('snapshot-label').value='';
+    await reloadSnapshots();
+    el('snapshot-b').value=snapshot.id;
+    compareSnapshots();
+    message('Snapshot captured successfully.');
+  }catch(err){message(err.message,true);}
+  finally{button.disabled=false;}
+};
 el('snapshot-a').onchange=compareSnapshots;el('snapshot-b').onchange=compareSnapshots;
 el('diag-run').onclick=async()=>{try{if(!state.pid)throw Error('Select a process first');const out=el('diag-output');out.textContent='Collecting requested diagnostic…';const r=await api('/api/diagnostics?'+query({pid:state.pid,kind:el('diag-kind').value}),'POST');out.textContent=r.output;}catch(err){el('diag-output').textContent=err.message;message(err.message,true);}};
 el('export').onclick=()=>{if(!state.samples.length)return message('No history to export.',true);const content=JSON.stringify({pid:state.pid,points:state.samples},null,2);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type:'application/json'}));a.download=`quantlab-pid-${state.pid}-${Date.now()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),250);};

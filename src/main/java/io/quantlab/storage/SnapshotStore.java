@@ -31,7 +31,7 @@ public final class SnapshotStore {
         }finally{Files.deleteIfExists(temporary);}
         prune();return snapshot;
     }
-    public Snapshot get(String id) throws IOException {
+    public synchronized Snapshot get(String id) throws IOException {
         if(id==null||!id.matches("[a-fA-F0-9-]{36}"))throw new IllegalArgumentException("Invalid snapshot ID");
         Path p=root.resolve(id+".snap");
         if(!Files.isRegularFile(p))return null;
@@ -39,7 +39,7 @@ public final class SnapshotStore {
         if(lines.size()!=5||!"QLSNAP1".equals(lines.get(0)))throw new IOException("Corrupted snapshot");
         return new Snapshot(lines.get(1),Json.unhex(lines.get(2)),Long.parseLong(lines.get(3)),Sample.parse(lines.get(4)));
     }
-    public List<Snapshot> list(int pid) throws IOException {
+    public synchronized List<Snapshot> list(int pid) throws IOException {
         List<Snapshot> all=new ArrayList<Snapshot>();
         try(DirectoryStream<Path> files=Files.newDirectoryStream(root,"*.snap")){
             for(Path p:files){

@@ -33,7 +33,8 @@ java -jar target/quant-performance-lab-0.1.0.jar --pids 12345
 - **Lightweight shared sampler** — CPU time deltas (100% = one fully occupied core), RSS, OS thread count, read/write byte counters, major faults, host CPU and system load; no subprocesses on the normal OSHI sampling path.
 - **Live interactive UI** — dark responsive UI, multiple watched PIDs, selected-process CPU/memory/threads/I/O-throughput/host charts, 1h/24h/7d windows and JSON exports.
 - **Historical data** — per-process bounded memory rings and asynchronous append-only local daily files. Keeps historical measurements after restart; time-range queries downsample to a bounded number of results.
-- **Durable quick snapshots** — named baseline snapshots written atomically, metadata in files, comparison of CPU, RSS, thread counts and host load. No secrets or heap data stored by the snapshot feature.
+- **Dedicated asynchronous snapshot pool** — fresh on-demand capture + atomic persistence run on **two isolated workers** (bounded queue of 32). HTTP and daemon control threads never execute snapshot collection; overload rejects immediately (HTTP 429). Queue depth, running workers and rejections are observable.
+- **Durable quick snapshots** — named baseline snapshots written atomically, metadata in files, comparison of RSS, threads and host load. Instant CPU% is explicitly unavailable (requires a measurement interval). No secrets or heap data are stored.
 - **Transparent diagnostic signals** — deterministic heuristics for host contention, multi-core CPU load, memory and thread footprint; no unsupported claims about root cause.
 - **Optional diagnostic commands** — `jcmd Thread.print`, `GC.heap_info`, `VM.flags` only with explicit `--allow-jcmd` and with time/output limits. Outputs are not persisted.
 - **Lightweight Java integration** — interfaces and adapters separate OSHI/proc, domain model, storage, sampling, API and diagnostics.
@@ -64,14 +65,37 @@ curl -s http://127.0.0.1:8787/api/status
 curl -s http://127.0.0.1:8787/api/processes
 curl -X POST 'http://127.0.0.1:8787/api/watch?pid=12345'
 curl -s 'http://127.0.0.1:8787/api/history?pid=12345&max=300'
+# POST returns HTTP 202 with {"jobId":"...","status":"QUEUED",...}; it never waits on profiling or disk I/O.
 curl -X POST 'http://127.0.0.1:8787/api/snapshots?pid=12345&label=baseline'
-curl -s http://127.0.0.1:8787/api/snapshots?pid=12345
+curl -s 'http://127.0.0.1:8787/api/snapshot-jobs?id=JOB_UUID'
+curl -s 'http://127.0.0.1:8787/api/snapshots?pid=12345' 
 curl -s 'http://127.0.0.1:8787/api/compare?a=SNAPSHOT_ID&b=SNAPSHOT_ID'
 # Explicit opt-in: ./run.sh --allow-jcmd ...
 curl -X POST 'http://127.0.0.1:8787/api/diagnostics?pid=12345&kind=threads'
 ```
 
 After a process exits, request its historical identity using `startMillis` from an old snapshot or known record; when a PID has been reused, never mix execution identities. History always records each execution's start timestamp.
+
+### Embedding as a thread-safe Java 8 library
+
+The recommended entry point is `SnapshotService`, not the demo HTTP server:
+
+```java
+SnapshotStore storage = new SnapshotStore(dataRoot.resolve("snapshots"), 200);
+SnapshotService service = new SnapshotService(
+    ProbeFactory::processProbe, ProbeFactory::hostProbe, storage);
+SnapshotService.Job job = service.submit(pid, "Baseline");  // returns immediately
+CompletionStage<Snapshot> result = job.completion();          // no blocking
+// service.close() during daemon shutdown; pending work completes exceptionally
+```
+
+No automatic sampling or snapshot workers start when the library is loaded. A worker is
+created lazily when capture is submitted. Thread-local probes isolate mutable OSHI CPU
+caches from the periodic sampler; the snapshot store serialises its own file operations.
+Snapshot collection never uses CallerRuns or an unbounded queue. Expensive client
+continuations should use `thenApplyAsync` with their own executor rather than occupying
+snapshot worker threads. Periodic sampling is a separate, optional component.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ### Production integration
 

@@ -80,3 +80,56 @@ No dependency on secrets management or process startup control is required. The 
 - Lifecycle-driven snapshots and comparisons keyed by deployed process version and environment manifest.
 
 These are **not** implemented in version 0.1.0.
+
+## Thread-safe asynchronous snapshots (Java 8)
+
+`SnapshotService` is an **opt-in library component** independent from `SamplingEngine`. It
+owns a dedicated `ThreadPoolExecutor` with 2 workers and an `ArrayBlockingQueue` of 32
+jobs by default. The pool is lazy (no workers before the first request), has named daemon
+threads (`quantlab-snapshot-*`), and uses **AbortPolicy**, never CallerRuns: a saturated
+snapshot queue returns a rejected request instead of blocking a daemon's control path.
+Its completion/status registry is bounded (128 records by default), and completed jobs are
+pruned after expiry or when capacity needs recycling. Workers have separate `ThreadLocal`
+OSHI/proc probe instances so mutable CPU tick caches cannot be shared with the periodic sampler.
+
+```java
+SnapshotStore store = new SnapshotStore(root.resolve("snapshots"), 200);
+SnapshotService service = new SnapshotService(
+    ProbeFactory::processProbe, ProbeFactory::hostProbe, store);
+
+// Immediately returns a job ticket, without reading /proc or touching disk.
+SnapshotService.Job job = service.submit(pid, "Before deploy");
+// Or consume as CompletionStage (use async continuations for lengthy processing).
+CompletionStage<Snapshot> stage = service.captureAsync(pid, "Baseline");
+
+// Upon daemon shutdown, explicitly release workers.
+service.close();
+```
+
+The worker reads fresh process/host data, then serialises an immutable sample and writes
+an atomic snapshot file. Since a single instantaneous read cannot establish process CPU
+utilisation, `cpuPercent` and `hostCpuPercent` are **unavailable/null** in *fresh snapshots*.
+Use periodic history or a future fixed-window measurement API for rates. If the process
+exits between request and execution, the job fails cleanly instead of saving a stale PID.
+
+The snapshot store serialises `create`, `get`, `list` and pruning. Its critical section is
+limited to snapshot file operations; it does **not** lock the sampler, process registry or
+coordinator. A bounded HTTP worker pool handles requests, but POST never waits for the
+snapshot worker; the HTTP adapter returns a `202` job ticket, and clients poll status.
+
+- `POST /api/snapshots?pid=123&label=baseline` → HTTP 202, `jobId` and `QUEUED`/`RUNNING`.
+- `GET /api/snapshot-jobs?id=UUID` → job status and snapshot after completion.
+- `GET /api/snapshots?pid=123` → completed saved snapshots.
+- Queue saturation → HTTP 429, do **not** retry in a tight loop.
+- `GET /api/status` exposes `snapshotQueueDepth`, `snapshotActiveWorkers`, `snapshotRejected`.
+
+Thread-safety invariants verified in `SnapshotConcurrencySelfTest` and
+`SnapshotServiceTest`: asynchronous admission, bounded concurrency, no caller-runs,
+rejection under pressure, atomic file writes under concurrent load, and completion of
+pending futures on shutdown. The sampler synchronises watch/unwatch with sample
+publication to prevent a concurrent unwatch from being reversed by an in-flight read.
+
+**Still required before production rollout:** validate OSHI/JNA behaviour and overhead on
+actual Unix host types and run sustained load testing (including permission failures,
+process exit races, and slow disks). `SnapshotService` is a library boundary, not an
+independent service; the sample HTTP UI can be omitted when embedding it.

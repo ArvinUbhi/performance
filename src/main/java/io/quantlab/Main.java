@@ -3,6 +3,7 @@ package io.quantlab;
 import io.quantlab.api.ApiServer;
 import io.quantlab.collection.ProbeFactory;
 import io.quantlab.core.SamplingEngine;
+import io.quantlab.core.SnapshotService;
 import io.quantlab.diagnostics.JcmdDiagnostics;
 import io.quantlab.storage.FileHistoryStore;
 import io.quantlab.storage.SnapshotStore;
@@ -35,12 +36,13 @@ public final class Main {
         FileHistoryStore history=new FileHistoryStore(root.resolve("history"),capacity,retention,maxBytes);
         SnapshotStore snapshots=new SnapshotStore(root.resolve("snapshots"),200);
         SamplingEngine sampler=new SamplingEngine(ProbeFactory.processProbe(),ProbeFactory.hostProbe(),history,maxPids,budget);
-        ApiServer server=new ApiServer(host,port,token,sampler,history,snapshots,new JcmdDiagnostics(allowJcmd));
+        SnapshotService snapshotService=new SnapshotService(ProbeFactory::processProbe,ProbeFactory::hostProbe,snapshots);
+        ApiServer server=new ApiServer(host,port,token,sampler,history,snapshots,snapshotService,new JcmdDiagnostics(allowJcmd));
         for(String s:options.getOrDefault("pids","").split(",")) {
             if(!s.trim().isEmpty())sampler.watch(Integer.parseInt(s.trim()));
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{
-            server.close();sampler.close();history.close();
+            server.close();snapshotService.close();sampler.close();history.close();
         },"quantlab-shutdown"));
         sampler.start(interval);server.start();
         System.out.println("Quant Performance Lab 0.1.0: http://"+host+":"+server.port()+"/ ; collector="+sampler.collector());
